@@ -1,0 +1,69 @@
+[props/source%3A%3A...ta-zanshin-add-on-for-splunk%2A.log%2A]
+owner = admin
+version = 8.2.2
+modtime = 1634079303.220588000
+
+[props/source%3A%3A...ta_zanshin_add_on_for_splunk%2A.log%2A]
+owner = admin
+version = 8.2.2
+modtime = 1634079303.619989000
+
+[passwords/credential%3A__REST_CREDENTIAL__%23TA-zanshin-add-on-for-splunk%23data%2Finputs%2Fzanshin_alerts%3Aasdfa%60%60splunk_cred_sep%60%601%3A]
+owner = admin
+version = 8.2.2
+modtime = 1634223273.707965000
+
+[passwords/credential%3A__REST_CREDENTIAL__%23TA-zanshin-add-on-for-splunk%23data%2Finputs%2Fzanshin_alerts%3Aasdfa%60%60splunk_cred_sep%60%602%3A]
+owner = admin
+version = 8.2.2
+modtime = 1634223273.725007000
+
+[inputs/zanshin_alerts%3A%2F%2Fasdfa]
+owner = admin
+version = 8.2.2
+modtime = 1634223274.972807000
+
+[passwords/credential%3A__REST_CREDENTIAL__%23TA-zanshin-add-on-for-splunk%23data%2Finputs%2Fzanshin_following_alerts%3Atest_acme_history%60%60splunk_cred_sep%60%601%3A]
+owner = admin
+version = 8.2.2
+modtime = 1634246048.862877000
+
+[passwords/credential%3A__REST_CREDENTIAL__%23TA-zanshin-add-on-for-splunk%23data%2Finputs%2Fzanshin_following_alerts%3Atest_acme_history%60%60splunk_cred_sep%60%602%3A]
+owner = admin
+version = 8.2.2
+modtime = 1634246048.876703000
+
+[inputs/zanshin_following_alerts%3A%2F%2Ftest_acme_history]
+owner = admin
+version = 8.2.2
+modtime = 1634246049.812043000
+
+[collections/TA_zanshin_add_on_for_splunk_checkpointer]
+owner = splunk-system-user
+version = 8.2.2
+modtime = 1634246062.226078000
+
+[passwords/credential%3A__REST_CREDENTIAL__%23TA-zanshin-add-on-for-splunk%23data%2Finputs%2Fzanshin_alerts%3Atest_acme%60%60splunk_cred_sep%60%601%3A]
+owner = admin
+version = 8.2.2
+modtime = 1634246645.746764000
+
+[passwords/credential%3A__REST_CREDENTIAL__%23TA-zanshin-add-on-for-splunk%23data%2Finputs%2Fzanshin_alerts%3Atest_acme%60%60splunk_cred_sep%60%602%3A]
+owner = admin
+version = 8.2.2
+modtime = 1634246645.754963000
+
+[inputs/zanshin_alerts%3A%2F%2Ftest_acme]
+owner = admin
+version = 8.2.2
+modtime = 1634246646.275117000
+
+[props/zanshin%3Afollowing%3Aalerts]
+owner = admin
+version = 8.2.2
+modtime = 1634246689.096235000
+
+[props/zanshin%3Aalerts]
+owner = admin
+version = 8.2.2
+modtime = 1634246699.769874000
