@@ -14,7 +14,6 @@ package:
 	slim package ./TA-zanshin-add-on-for-splunk -o ./dist
 
 update:
-
 	docker exec -it splunk sudo ./bin/splunk restart
 
 splunk:

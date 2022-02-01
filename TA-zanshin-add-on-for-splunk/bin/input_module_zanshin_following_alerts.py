@@ -5,17 +5,18 @@ import os
 import sys
 import time
 import json
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from zanshinsdk import Client
-from zanshinsdk.following_alerts_history import AbstractPersistentFollowingAlertsIterator, PersistenceFollowingEntry
+from zanshinsdk.iterator import AbstractPersistentAlertsIterator, PersistenceEntry
 
 PORTAL_DOMAIN = "https://zanshin.tenchisecurity.com"
 
 
-class HelperPersistentFollowingAlertsIterator(AbstractPersistentFollowingAlertsIterator):
-    def __init__(self, helper, opt_name, *args, **kwargs):
-        super(HelperPersistentFollowingAlertsIterator, self).__init__(*args, **kwargs)
+class HelperPersistentFollowingAlertsIterator(AbstractPersistentAlertsIterator):
+    def __init__(self, helper, opt_name, following_ids, *args, **kwargs):
+        super(HelperPersistentFollowingAlertsIterator, self).__init__(field_name='following_ids',
+                                                                      filter_ids=following_ids, *args, **kwargs)
         self._helper = helper
         self._opt_name = opt_name
 
@@ -27,17 +28,22 @@ class HelperPersistentFollowingAlertsIterator(AbstractPersistentFollowingAlertsI
     def opt_name(self):
         return self._opt_name
 
+    def _load_alerts(self):
+        return self.client.iter_alerts_following_history(
+            organization_id=self.persistence_entry.organization_id,
+            following_ids=self.persistence_entry.filter_ids,
+            cursor=self.persistence_entry.cursor
+        )
+
     def _load(self):
-        cursor = self.helper.get_check_point('%s:%s:%s:cursor' % (self.opt_name, self.organization_id, self.following_ids))
+        cursor = self.helper.get_check_point('%s:%s:%s:cursor' % (self.opt_name, self._organization_id, self._filter_ids))
         self.helper.log_info(f"checkpoint loaded: {cursor}")
-        return PersistenceFollowingEntry(self.organization_id, self.following_ids, cursor)
+        return PersistenceEntry(self._organization_id, self._filter_ids, cursor)
 
     def _save(self):
-        self.helper.save_check_point('%s:%s:%s:cursor' % (self.opt_name, self.organization_id, self.following_ids), self.persistence_following_entry.cursor)
-        self.helper.log_info(f"checkpoint saved: {self.persistence_following_entry.cursor}")
-
-    def __str__(self):
-        return super(HelperPersistentFollowingAlertsIterator, self).__str__()[:-1]
+        self.helper.save_check_point('%s:%s:%s:cursor' % (self.opt_name, self._organization_id, self._filter_ids),
+                                     self.persistence_entry.cursor)
+        self.helper.log_info(f"checkpoint saved: {self.persistence_entry.cursor}")
 
 
 def validate_input(helper, definition):
@@ -68,22 +74,27 @@ def collect_events(helper, ew):
 
     _client = Client(api_key=opt_api_key)
 
-    following = _client.iter_organization_following(opt_organization_id)
+    _following = _client.iter_organization_following(opt_organization_id)
 
-    iter_alerts = HelperPersistentFollowingAlertsIterator(helper, opt_name, opt_organization_id, opt_following_ids)
+    following = list(_following)
+
+    iter_alerts = HelperPersistentFollowingAlertsIterator(helper, opt_name, client=_client,
+                                                          organization_id=opt_organization_id,
+                                                          following_ids=opt_following_ids)
 
     for alert in iter_alerts:
         try:
-            followingName = 'undefined'
+            following_name = 'undefined'
             for f in following:
                 if f['id'] == alert['followingId']:
-                    followingName = f['name']
+                    following_name = f['name']
                     break
 
             _alert = {
                 "alert_id": alert['id'],
                 "alert_version": alert['version'],
-                "following_name": followingName,
+                "following_id": alert['followingId'],
+                "following_name": following_name,
                 "resource": alert['resource'],
                 "rule": alert['rule'],
                 "severity": alert['severity'],
@@ -95,7 +106,6 @@ def collect_events(helper, ew):
                 "state": alert['state'],
                 "date": alert['date'],
                 "alert_pure": alert['rulePure'],
-                "following_id": alert['followingId'],
                 "permalink": f"{PORTAL_DOMAIN}/alert/{alert['id']}",
             }
 
@@ -108,11 +118,10 @@ def collect_events(helper, ew):
                                      data=json.dumps(_alert))
 
             ew.write_event(event)
-            helper.log_info(f"Wrote alert {alert['id']}")
+            helper.log_info(f"Wrote alert {alert['id']} version {alert['version']}")
             helper.log_info('saving check point')
             iter_alerts.save()
         except Exception as e:
-            helper.log_error(f"Error writing alert {alert['id']}")
+            helper.log_error(f"Error writing alert {alert['id']} version {alert['version']}")
             raise e
-    helper.log_info(f"[{opt_name}]Collect events finished for organization {opt_organization_id}")
-
+    helper.log_info(f"Collect events finished for {opt_name} input")
