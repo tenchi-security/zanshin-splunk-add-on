@@ -37,9 +37,6 @@ class FilePersistentAlertsIterator(AbstractPersistentAlertsIterator):
             return None
 
     def _save(self):
-        print(f"org: {str(self.persistence_entry.organization_id)}")
-        print(f"filter_ids: {','.join([str(filter_id) for filter_id in self.persistence_entry.filter_ids])}")
-        print(f"cursor: {str(self.persistence_entry.cursor)}")
         with open(self.filename, 'w') as f:
             pe = {
                 'organization_id': str(self.persistence_entry.organization_id),

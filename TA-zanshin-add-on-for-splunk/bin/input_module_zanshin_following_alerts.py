@@ -72,7 +72,7 @@ def collect_events(helper, ew):
     else:
         opt_following_ids = [x.strip() for x in opt_following_ids.split(',')]
 
-    _client = Client(api_key=opt_api_key)
+    _client = Client(api_key=opt_api_key, user_agent="Splunk v1.0.0-Alpha2")
 
     _following = _client.iter_organization_following(opt_organization_id)
 

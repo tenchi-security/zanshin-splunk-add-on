@@ -74,7 +74,7 @@ def collect_events(helper, ew):
     else:
         opt_scan_target_ids = [x.strip() for x in opt_scan_target_ids.split(',')]
 
-    _client = Client(api_key=opt_api_key)
+    _client = Client(api_key=opt_api_key, user_agent="Splunk v1.0.0-Alpha2")
 
     organization = _client.get_organization(opt_organization_id)
     _scan_targets = _client.iter_organization_scan_targets(opt_organization_id)
