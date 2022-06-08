@@ -5,11 +5,46 @@ import os
 import sys
 import time
 import json
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from zanshinsdk import Client
+from zanshinsdk.iterator import AbstractPersistentAlertsIterator, PersistenceEntry
 
 PORTAL_DOMAIN = "https://zanshin.tenchisecurity.com"
+
+
+class HelperPersistentFollowingAlertsIterator(AbstractPersistentAlertsIterator):
+    def __init__(self, helper, opt_name, following_ids, *args, **kwargs):
+        super(HelperPersistentFollowingAlertsIterator, self).__init__(field_name='following_ids',
+                                                                      filter_ids=following_ids, *args, **kwargs)
+        self._helper = helper
+        self._opt_name = opt_name
+
+    @property
+    def helper(self):
+        return self._helper
+
+    @property
+    def opt_name(self):
+        return self._opt_name
+
+    def _load_alerts(self):
+        return self.client.iter_alerts_following_history(
+            organization_id=self.persistence_entry.organization_id,
+            following_ids=self.persistence_entry.filter_ids,
+            cursor=self.persistence_entry.cursor
+        )
+
+    def _load(self):
+        cursor = self.helper.get_check_point('%s:%s:%s:cursor' % (self.opt_name, self._organization_id, self._filter_ids))
+        self.helper.log_info(f"checkpoint loaded: {cursor}")
+        return PersistenceEntry(self._organization_id, self._filter_ids, cursor)
+
+    def _save(self):
+        self.helper.save_check_point('%s:%s:%s:cursor' % (self.opt_name, self._organization_id, self._filter_ids),
+                                     self.persistence_entry.cursor)
+        self.helper.log_info(f"checkpoint saved: {self.persistence_entry.cursor}")
+
 
 def validate_input(helper, definition):
     """Implement your own validation logic to validate the input stanza configurations"""
@@ -37,31 +72,29 @@ def collect_events(helper, ew):
     else:
         opt_following_ids = [x.strip() for x in opt_following_ids.split(',')]
 
-    _client = Client(api_key=opt_api_key)
+    _client = Client(api_key=opt_api_key, user_agent="Splunk v1.0.0-Alpha2")
 
-    following = _client.iter_organization_following(opt_organization_id)
-    
-    start_date = None
-    
-    helper.log_info("get check point")
-    latest_date = helper.get_check_point('%s:%s:following:last_date' % (opt_name, opt_organization_id))
-    
-    if latest_date:
-        start_date = latest_date
+    _following = _client.iter_organization_following(opt_organization_id)
 
+    following = list(_following)
 
-    for alert in _client.iter_following_alerts(opt_organization_id, opt_following_ids, start_date=start_date, historical=True):
+    iter_alerts = HelperPersistentFollowingAlertsIterator(helper, opt_name, client=_client,
+                                                          organization_id=opt_organization_id,
+                                                          following_ids=opt_following_ids)
+
+    for alert in iter_alerts:
         try:
-            followingName = 'undefined'
+            following_name = 'undefined'
             for f in following:
                 if f['id'] == alert['followingId']:
-                    followingName = f['name']
+                    following_name = f['name']
                     break
 
             _alert = {
                 "alert_id": alert['id'],
                 "alert_version": alert['version'],
-                "following_name": followingName,
+                "following_id": alert['followingId'],
+                "following_name": following_name,
                 "resource": alert['resource'],
                 "rule": alert['rule'],
                 "severity": alert['severity'],
@@ -73,34 +106,22 @@ def collect_events(helper, ew):
                 "state": alert['state'],
                 "date": alert['date'],
                 "alert_pure": alert['rulePure'],
-                "following_id": alert['followingId'],
                 "permalink": f"{PORTAL_DOMAIN}/alert/{alert['id']}",
             }
 
             utc_dt = datetime.strptime(alert['date'], '%Y-%m-%dT%H:%M:%S.%fZ')
-            utc_dt = utc_dt + timedelta(milliseconds=1)
 
             event = helper.new_event(time=(utc_dt - datetime(1970, 1, 1)).total_seconds(),
-                                    source=helper.get_input_type(),
-                                    index=helper.get_output_index(),
-                                    sourcetype=helper.get_sourcetype(),
-                                    data=json.dumps(_alert))
+                                     source=helper.get_input_type(),
+                                     index=helper.get_output_index(),
+                                     sourcetype=helper.get_sourcetype(),
+                                     data=json.dumps(_alert))
 
             ew.write_event(event)
-            helper.log_info(f"Wrote alert {alert['id']}")
-
-            current_date = helper.get_check_point('%s:%s:following:last_date' % (opt_name, opt_organization_id))
-
-            if current_date:
-                cp_utc_dt = datetime.strptime(current_date, '%Y-%m-%dT%H:%M:%S.%fZ')
-                if (utc_dt >= cp_utc_dt):
-                    helper.save_check_point('%s:%s:following:last_date' % (opt_name, opt_organization_id), utc_dt.strftime('%Y-%m-%dT%H:%M:%S.%fZ'))
-                    helper.log_info("saving check point")
-            else:
-                helper.save_check_point('%s:%s:following:last_date' % (opt_name, opt_organization_id), utc_dt.strftime('%Y-%m-%dT%H:%M:%S.%fZ'))
-                helper.log_info("saving check point")
-
+            helper.log_info(f"Wrote alert {alert['id']} version {alert['version']}")
+            helper.log_info('saving check point')
+            iter_alerts.save()
         except Exception as e:
-            helper.log_error(f"Error writing alert {alert['id']}")
+            helper.log_error(f"Error writing alert {alert['id']} version {alert['version']}")
             raise e
-    helper.log_info(f"Collect events finished for organization {opt_organization_id}")
+    helper.log_info(f"Collect events finished for {opt_name} input")
