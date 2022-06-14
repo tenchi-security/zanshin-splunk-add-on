@@ -10,7 +10,7 @@
     "author": [
       {
         "name": "Zanshin",
-        "email": null,
+        "email": "support@tenchisecurity.com",
         "company": "Tenchi Security"
       }
     ],
@@ -18,8 +18,8 @@
     "description": "",
     "classification": {
       "intendedAudience": null,
-      "categories": [],
-      "developmentStatus": null
+      "categories": ["Cloud Secuirty"],
+      "developmentStatus": "Alpha"
     },
     "commonInformationModels": null,
     "license": {

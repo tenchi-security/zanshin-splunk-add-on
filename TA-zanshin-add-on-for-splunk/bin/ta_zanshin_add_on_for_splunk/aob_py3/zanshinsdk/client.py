@@ -1,4 +1,8 @@
+import sys
+import time
 import logging
+from os.path import isfile
+from os import environ
 from configparser import RawConfigParser
 from enum import Enum
 from math import ceil
@@ -6,10 +10,11 @@ from pathlib import Path
 from typing import Dict, Optional, Iterator, Iterable, Union
 from urllib.parse import urlparse
 from uuid import UUID
+from importlib.util import find_spec, module_from_spec
 
 import httpx
 
-from zanshinsdk import __version__ as sdk_version
+from zanshinsdk.version import __version__ as sdk_version
 
 CONFIG_DIR = Path.home() / ".tenchi"
 CONFIG_FILE = CONFIG_DIR / "config"
@@ -36,7 +41,33 @@ class ScanTargetKind(str, Enum):
     GCP = "GCP"
     AZURE = "AZURE"
     HUAWEI = "HUAWEI"
-    ORACLE = "ORACLE"
+    DOMAIN = "DOMAIN"
+
+
+class ScanTargetAWS(dict):
+    def __init__(self, account):
+        dict.__init__(self, account=account)
+
+
+class ScanTargetAZURE(dict):
+    def __init__(self, application_id, subscription_id, directory_id, secret):
+        dict.__init__(self, applicationId=application_id, subscriptionId=subscription_id,
+                      directoryId=directory_id, secret=secret)
+
+
+class ScanTargetGCP(dict):
+    def __init__(self, project_id):
+        dict.__init__(self, projectId=project_id)
+
+
+class ScanTargetHUAWEI(dict):
+    def __init__(self, account_id):
+        dict.__init__(self, accountId=account_id)
+
+
+class ScanTargetDOMAIN(dict):
+    def __init__(self, domain):
+        dict.__init__(self, domain=domain)
 
 
 class Roles(str, Enum):
@@ -56,14 +87,17 @@ class Client:
         :param profile: which configuration file section to use for settings, or None to ignore configuration file
         :param api_key: optional override of the API key to use
         :param api_url: optional override of the base URL of the Zanshin API to use
-        :param user_agent: optional override of the user agent to use in requests performed
+        :param user_agent: optional addition of the user agent to use in requests performed
         :param proxy_url: optional URL indicating which proxy server to use, or None for direct connections to the API
         """
         self._client = httpx.Client()
         self._logger: logging.Logger = logging.getLogger("zanshinsdk")
 
-        # read configuration file
-        if profile and CONFIG_FILE.is_file():
+        (api_key, api_url, user_agent, proxy_url) = self._get_config_from_env_if_not_exists(
+            api_key=api_key, api_url=api_url, user_agent=user_agent, proxy_url=proxy_url)
+
+        # read configuration file if no env variable is set
+        if profile and isfile(CONFIG_FILE) or all(value is None for value in [api_key, api_url, user_agent]):
             parser = RawConfigParser()
             parser.read(str(CONFIG_FILE))
             if not parser.has_section(profile):
@@ -84,7 +118,7 @@ class Client:
         if api_url:
             self._api_url = api_url
         elif parser and parser.get(profile, "api_url", fallback=None):
-            self._api_key = parser.get(profile, "api_url")
+            self._api_url = parser.get(profile, "api_url")
         else:
             self._api_url = "https://api.zanshin.tenchisecurity.com"
 
@@ -119,6 +153,31 @@ class Client:
             self._user_agent = f"Zanshin Python SDK v{sdk_version}"
 
         self._update_client()
+
+    def _get_config_from_env_if_not_exists(self, api_key: str, api_url: str, user_agent: str, proxy_url: str):
+        """
+        If api_key, api_url_, proxy_url, or user_agent are not set, try to get them from Environment Variables
+        If any configuration value is set, ignore the Environment Variables
+        """
+        env_zanshin_api_key = environ['ZANSHIN_API_KEY'] if 'ZANSHIN_API_KEY' in environ else None
+        env_zanshin_api_url = environ['ZANSHIN_API_URL'] if 'ZANSHIN_API_URL' in environ else None
+        env_zanshin_user_agent = environ['ZANSHIN_USER_AGENT'] if 'ZANSHIN_USER_AGENT' in environ else None
+        if 'HTTPS_PROXY' in environ:
+            env_proxy_url = environ['HTTPS_PROXY']
+        elif 'HTTP_PROXY' in environ:
+            env_proxy_url = environ['HTTP_PROXY']
+        else:
+            env_proxy_url = None
+
+        if not api_key and env_zanshin_api_key:
+            api_key = env_zanshin_api_key
+        if not api_url and env_zanshin_api_url:
+            api_url = env_zanshin_api_url
+        if not user_agent and env_zanshin_user_agent:
+            user_agent = env_zanshin_user_agent
+        if not proxy_url and env_proxy_url:
+            proxy_url = env_proxy_url
+        return api_key, api_url, user_agent, proxy_url
 
     def _update_client(self):
         """
@@ -189,7 +248,7 @@ class Client:
 
     def _get_sanitized_proxy_url(self) -> Optional[str]:
         """
-        Returns a sanitized proxy URL that doesn"t expose a password, if one is present.
+        Returns a sanitized proxy URL that doesn't expose a password, if one is present.
         :return:
         """
         if self.proxy_url:
@@ -216,8 +275,7 @@ class Client:
         :param body: request body to pass along to httpx.Client.request
         :return: the requests.Response object returned by httpx.Client.request
         """
-        response = self._client.request(
-            method=method, url=self.api_url + path, params=params, json=body)
+        response = self._client.request(method=method, url=self.api_url + path, params=params, json=body)
 
         if response.request.content:
             self._logger.debug("%s %s (%d bytes in request body) status code %d", response.request.method,
@@ -360,7 +418,7 @@ class Client:
 
     def get_organization_member(self, organization_id: Union[UUID, str], member_id: Union[UUID, str]) -> Dict:
         """
-        Get details on a user"s organization membership.
+        Get details on a user's organization membership.
         <https://api.zanshin.tenchisecurity.com/#operation/getOrganizationMembers>
         :param organization_id: the ID of the organization
         :param member_id: the ID of the member
@@ -398,6 +456,30 @@ class Client:
         return self._request("DELETE",
                              f"/organizations/{validate_uuid(organization_id)}/members/"
                              f"{validate_uuid(member_id)}").json()
+
+    def reset_organization_member_mfa(self, organization_id: Union[UUID, str], member_id: Union[UUID, str]) -> bool:
+        """
+        Reset organization member MFA.
+        <https://api.zanshin.tenchisecurity.com/#operation/resetOrganizationMemberMfaById>
+        :param organization_id: the ID of the organization
+        :param member_id: the ID of the member
+        :return: a boolean if success
+        """
+        return self._request("POST",
+                             f"/organizations/{validate_uuid(organization_id)}/members/"
+                             f"{validate_uuid(member_id)}/mfa/reset").json()
+
+    def reset_delete_organization_password(self, organization_id: Union[UUID, str], member_id: Union[UUID, str]) -> bool:
+        """
+        Reset organization member Password.
+        <https://api.zanshin.tenchisecurity.com/#operation/resetOrganizationMemberPasswordById>
+        :param organization_id: the ID of the organization
+        :param member_id: the ID of the member
+        :return: a boolean if success
+        """
+        return self._request("POST",
+                             f"/organizations/{validate_uuid(organization_id)}/members/"
+                             f"{validate_uuid(member_id)}/password/reset").json()
 
     ###################################################
     # Organization Member Invite
@@ -626,7 +708,9 @@ class Client:
         yield from self._request("GET", f"/organizations/{validate_uuid(organization_id)}/scantargets").json()
 
     def create_organization_scan_target(self, organization_id: Union[UUID, str], kind: ScanTargetKind, name: str,
-                                        credential: Dict[str, any], schedule: str = "0 0 * * *") -> Dict:
+                                        credential: Union[ScanTargetAWS, ScanTargetAZURE, ScanTargetGCP,
+                                                          ScanTargetHUAWEI, ScanTargetDOMAIN],
+                                        schedule: str = "0 0 * * *") -> Dict:
         """
         Create a new scan target in organization.
         <https://api.zanshin.tenchisecurity.com/#operation/createOrganizationScanTargets>
@@ -637,37 +721,31 @@ class Client:
             * For AWS scan targets, provide the account ID in the *account* field
             * For Azure scan targets, provide *applicationId*, *subscriptionId*, *directoryId* and *secret* fields.
             * For GCP scan targets, provide a *projectId* field
+            * For DOMAIN scan targets, provide a URL in the *domain* field
         :param schedule: schedule in cron format
+        :return: a dict representing the newly created scan target
         """
         validate_class(kind, ScanTargetKind)
         validate_class(name, str)
         validate_class(schedule, str)
-        validate_class(credential, dict)
-
-        credential_keys = ""
 
         if kind == ScanTargetKind.AWS:
-            credential_keys = {"account"}
+            validate_class(credential, ScanTargetAWS)
         elif kind == ScanTargetKind.AZURE:
-            credential_keys = {"applicationId",
-                               "subscriptionId", "directoryId", "secret"}
+            validate_class(credential, ScanTargetAZURE)
         elif kind == ScanTargetKind.GCP:
-            credential_keys = {"projectId"}
+            validate_class(credential, ScanTargetGCP)
         elif kind == ScanTargetKind.HUAWEI:
-            credential_keys = {"accountId"}
-
-        if set(credential.keys()) != credential_keys:
-            raise ValueError(
-                f"credential should contain the following field(s): {', '.join(credential_keys)}")
-        for k in credential_keys:
-            validate_class(credential[k], str)
+            validate_class(credential, ScanTargetHUAWEI)
+        elif kind == ScanTargetKind.DOMAIN:
+            validate_class(credential, ScanTargetDOMAIN)
 
         body = {
             "name": name,
             "kind": kind,
             "credential": credential,
             "schedule": schedule
-        }
+        }        
         return self._request("POST", f"/organizations/{validate_uuid(organization_id)}/scantargets",
                              body=body).json()
 
@@ -798,7 +876,7 @@ class Client:
                          severities: Optional[Iterable[AlertSeverity]] = None,
                          page: int = 1,
                          page_size: int = 100,
-                         language: Optional[Iterable[Languages]] = None,
+                         language: Optional[Languages] = None,
                          created_at_start: Optional[str] = None,
                          created_at_end: Optional[str] = None,
                          updated_at_start: Optional[str] = None,
@@ -827,24 +905,25 @@ class Client:
             "page": page,
             "pageSize": page_size
         }
-
         if scan_target_ids:
             if isinstance(scan_target_ids, str):
                 scan_target_ids = [scan_target_ids]
-            else:
-                validate_class(scan_target_ids, Iterable)
+            validate_class(scan_target_ids, Iterable)
             body["scanTargetIds"] = [validate_uuid(x) for x in scan_target_ids]
         if rule:
             body["rule"] = rule
         if states:
+            if isinstance(states, str):
+                states = [states]
             validate_class(states, Iterable)
-            body["states"] = [validate_class(
-                x, AlertState).value for x in states]
+            body["states"] = [validate_class(x, AlertState).value for x in states]
         if severities:
+            if isinstance(severities, str):
+                severities = [severities]
             validate_class(severities, Iterable)
-            body["severities"] = [validate_class(
-                x, AlertSeverity).value for x in severities]
+            body["severities"] = [validate_class(x, AlertSeverity).value for x in severities]
         if language:
+            validate_class(language, Languages)
             body["lang"] = language
         if created_at_start:
             body["CreatedAtStart"] = created_at_start
@@ -935,20 +1014,22 @@ class Client:
         if following_ids:
             if isinstance(following_ids, str):
                 following_ids = [following_ids]
-            else:
-                validate_class(following_ids, Iterable)
+            validate_class(following_ids, Iterable)
             body["followingIds"] = [validate_uuid(x) for x in following_ids]
         if rule:
             body["rule"] = rule
         if states:
+            if isinstance(states, str):
+                states = [states]
             validate_class(states, Iterable)
-            body["states"] = [validate_class(
-                x, AlertState).value for x in states]
+            body["states"] = [validate_class(x, AlertState).value for x in states]
         if severities:
+            if isinstance(severities, str):
+                severities = [severities]
             validate_class(severities, Iterable)
-            body["severities"] = [validate_class(
-                x, AlertSeverity).value for x in severities]
+            body["severities"] = [validate_class(x, AlertSeverity).value for x in severities]
         if language:
+            validate_class(language, Languages)
             body["lang"] = language
         if created_at_start:
             body["CreatedAtStart"] = created_at_start
@@ -989,26 +1070,12 @@ class Client:
         :return: an iterator over the JSON decoded alerts
         """
 
-        if following_ids:
-            if isinstance(following_ids, str):
-                following_ids = [following_ids]
-            else:
-                validate_class(following_ids, Iterable)
-        else:
-            # workaround for API limitation
-            following_ids = set()
-            for org in self.iter_organizations():
-                following_ids |= {x["id"]
-                                  for x in self.iter_organization_following(org["id"])}
-            following_ids = list(following_ids)
-
         page = self._get_following_alerts_page(organization_id, following_ids, rule, states, severities, page=1,
                                                page_size=page_size,
                                                language=language, created_at_start=created_at_start,
                                                created_at_end=created_at_end,
                                                updated_at_start=updated_at_start, updated_at_end=updated_at_end)
         yield from page.get("data", [])
-
         for page_number in range(2, int(ceil(page.get("total", 0) / float(page_size))) + 1):
             page = self._get_following_alerts_page(organization_id, following_ids, rule, states, severities,
                                                    page=page_number,
@@ -1043,10 +1110,10 @@ class Client:
         if scan_target_ids:
             if isinstance(scan_target_ids, str):
                 scan_target_ids = [scan_target_ids]
-            else:
-                validate_class(scan_target_ids, Iterable)
+            validate_class(scan_target_ids, Iterable)
             body["scanTargetIds"] = [validate_uuid(x) for x in scan_target_ids]
         if language:
+            validate_class(language, Languages)
             body["lang"] = language
         if cursor:
             body["cursor"] = cursor
@@ -1059,7 +1126,7 @@ class Client:
                             language: Optional[Languages] = None,
                             cursor: Optional[str] = None) -> Iterator[Dict]:
         """
-        Iterates over the alerts" history of an organization by loading them, transparently paginating on the API.
+        Iterates over the alert's history of an organization by loading them, transparently paginating on the API.
         <https://api.zanshin.tenchisecurity.com/#operation/listAllAlertsHistory>
         :param organization_id: the ID of the organization
         :param scan_target_ids: optional list of scan target IDs to list alerts from, defaults to all
@@ -1108,10 +1175,10 @@ class Client:
         if following_ids:
             if isinstance(following_ids, str):
                 following_ids = [following_ids]
-            else:
-                validate_class(following_ids, Iterable)
-            body["following_ids"] = [validate_uuid(x) for x in following_ids]
+            validate_class(following_ids, Iterable)
+            body["followingIds"] = [validate_uuid(x) for x in following_ids]
         if language:
+            validate_class(language, Languages)
             body["lang"] = language
         if cursor:
             body["cursor"] = cursor
@@ -1124,7 +1191,7 @@ class Client:
                                       language: Optional[Languages] = None,
                                       cursor: Optional[str] = None) -> Iterator[Dict]:
         """
-        Iterates over the alerts" history of an organization by loading them, transparently paginating on the API
+        Iterates over the alert's history of an organization by loading them, transparently paginating on the API
         <https://api.zanshin.tenchisecurity.com/#operation/listAllAlertsHistoryFollowing>
         :param organization_id: the ID of the organization
         :param following_ids: optional list of IDs of organizations you are following to list alerts from, defaults to
@@ -1172,17 +1239,18 @@ class Client:
         if scan_target_ids:
             if isinstance(scan_target_ids, str):
                 scan_target_ids = [scan_target_ids]
-            else:
-                validate_class(scan_target_ids, Iterable)
+            validate_class(scan_target_ids, Iterable)
             body["scanTargetIds"] = [validate_uuid(x) for x in scan_target_ids]
         if states:
+            if isinstance(states, str):
+                states = [states]
             validate_class(states, Iterable)
-            body["states"] = [validate_class(
-                x, AlertState).value for x in states]
+            body["states"] = [validate_class(x, AlertState).value for x in states]
         if severities:
+            if isinstance(severities, str):
+                severities = [severities]
             validate_class(severities, Iterable)
-            body["severities"] = [validate_class(
-                x, AlertSeverity).value for x in severities]
+            body["severities"] = [validate_class(x, AlertSeverity).value for x in severities]
         return self._request("POST", "/alerts/rules", body=body).json()
 
     def iter_grouped_alerts(self, organization_id: Union[UUID, str],
@@ -1233,17 +1301,18 @@ class Client:
         if following_ids:
             if isinstance(following_ids, str):
                 following_ids = [following_ids]
-            else:
-                validate_class(following_ids, Iterable)
+            validate_class(following_ids, Iterable)
             body["followingIds"] = [validate_uuid(x) for x in following_ids]
         if states:
+            if isinstance(states, str):
+                states = [states]
             validate_class(states, Iterable)
-            body["states"] = [validate_class(
-                x, AlertState).value for x in states]
+            body["states"] = [validate_class(x, AlertState).value for x in states]
         if severities:
+            if isinstance(severities, str):
+                severities = [severities]
             validate_class(severities, Iterable)
-            body["severities"] = [validate_class(
-                x, AlertSeverity).value for x in severities]
+            body["severities"] = [validate_class(x, AlertSeverity).value for x in severities]
 
         return self._request("POST", "/alerts/rules/following", body=body).json()
 
@@ -1265,23 +1334,9 @@ class Client:
         :return: an iterator over the JSON decoded alerts
         """
 
-        if following_ids:
-            if isinstance(following_ids, str):
-                following_ids = [following_ids]
-            else:
-                validate_class(following_ids, Iterable)
-        else:
-            # workaround for API limitation
-            following_ids = set()
-            for org in self.iter_organizations():
-                following_ids |= {x["id"]
-                                  for x in self.iter_organization_following(org["id"])}
-            following_ids = list(following_ids)
-
-        page = self._get_grouped_following_alerts_page(
-            organization_id, following_ids, states, severities, page=1, page_size=page_size)
+        page = self._get_grouped_following_alerts_page(organization_id, following_ids, states,
+                                                       severities, page=1, page_size=page_size)
         yield from page.get("data", [])
-
         for page_number in range(2, int(ceil(page.get("total", 0) / float(page_size))) + 1):
             page = self._get_grouped_following_alerts_page(organization_id, following_ids, states,
                                                            severities, page=page_number, page_size=page_size)
@@ -1381,10 +1436,8 @@ class Client:
         if scan_target_ids:
             if isinstance(scan_target_ids, str):
                 scan_target_ids = [scan_target_ids]
-            else:
-                validate_class(scan_target_ids, Iterable)
-            body["scanTargetIds"] = list(
-                {validate_uuid(x) for x in scan_target_ids})
+            validate_class(scan_target_ids, Iterable)
+            body["scanTargetIds"] = [validate_uuid(x) for x in scan_target_ids]
 
         return self._request("POST", "/alerts/summaries", body=body).json()
 
@@ -1403,10 +1456,8 @@ class Client:
         if following_ids:
             if isinstance(following_ids, str):
                 following_ids = [following_ids]
-            else:
-                validate_class(following_ids, Iterable)
-            body["followingIds"] = list(
-                {validate_uuid(x) for x in following_ids})
+            validate_class(following_ids, Iterable)
+            body["followingIds"] = [validate_uuid(x) for x in following_ids]
 
         return self._request("POST", "/alerts/summaries/following", body=body).json()
 
@@ -1430,10 +1481,8 @@ class Client:
         if scan_target_ids:
             if isinstance(scan_target_ids, str):
                 scan_target_ids = [scan_target_ids]
-            else:
-                validate_class(scan_target_ids, Iterable)
-            body["scanTargetIds"] = list(
-                {validate_uuid(x) for x in scan_target_ids})
+            validate_class(scan_target_ids, Iterable)
+            body["scanTargetIds"] = [validate_uuid(x) for x in scan_target_ids]
 
         return self._request("POST", "/alerts/summaries/scans", body=body).json()
 
@@ -1457,16 +1506,167 @@ class Client:
         if following_ids:
             if isinstance(following_ids, str):
                 following_ids = [following_ids]
-            else:
-                validate_class(following_ids, Iterable)
-            body["followingIds"] = list(
-                {validate_uuid(x) for x in following_ids})
+            validate_class(following_ids, Iterable)
+            body["followingIds"] = [validate_uuid(x) for x in following_ids]
 
         return self._request("POST", "/alerts/summaries/scans/following", body=body).json()
 
     def __repr__(self):
         return f"Connection(api_url='{self.api_url}', api_key='***{self._api_key[-6:]}', " \
-               f"user_agent='{self.user_agent}, proxy_url={self._get_sanitized_proxy_url()}')"
+               f"user_agent='{self.user_agent}', proxy_url='{self._get_sanitized_proxy_url()}')"
+
+    ###################################################
+    # Onboard Scan Targets
+    ###################################################
+
+    def onboard_scan_target(self, region: str, organization_id: Union[UUID, str], kind: ScanTargetKind, name: str,
+                            credential: Union[ScanTargetAWS, ScanTargetAZURE, ScanTargetGCP, ScanTargetHUAWEI,
+                            ScanTargetDOMAIN], boto3_session: any = None,
+                            boto3_profile: str = "default", schedule: str = "0 0 * * *") -> Dict:
+            """
+            Currently supports only AWS Scan Targets.
+            For AWS Scan Target:
+            If boto3 is installed, creates a Scan Target for the given organization and perform the onboard.
+            :param region: the AWS Region to deploy the CloudFormation Template of Zanshin Service Role.
+            :param organization_id: the ID of the organization to have the new Scan Target.
+            :param kind: the Kind of scan target (AWS, GCP, AZURE, DOMAIN)
+            :param name: the name of the new scan target.
+            :param credential: credentials to access the cloud account to be scanned:
+                * For AWS scan targets, provide the account ID in the *account* field.
+                * For Azure scan targets, provide *applicationId*, *subscriptionId*, *directoryId* and *secret* fields.
+                * For GCP scan targets, provide a *projectId* field.
+                * For DOMAIN scan targets, provide a URL in the *domain* field.
+
+            :param schedule: schedule in cron format.
+            :param boto3_profile: boto3 profile name used for CloudFormation Deployment. If none, uses \"default\" profile.
+            :param boto3_session: boto3 session used for CloudFormation Deployment. If informed, will ignore boto3_profile.
+            :return: JSON object containing newly created scan target .
+            """
+
+            self._check_scantarget_is_aws(kind)
+            boto3 = self._check_boto3_installation()
+            if not boto3_session:
+                boto3_session = self._get_session_from_boto3_profile(boto3_profile=boto3_profile, boto3=boto3)
+            
+            self._check_aws_credentials_are_valid(boto3_session=boto3_session)
+
+            if len(name) < 3:
+                name = f"{name}_{credential['account']}"
+
+            new_scan_target = self.create_organization_scan_target(
+                    organization_id, kind, name, credential, schedule)
+            new_scan_target_id = new_scan_target['id']
+
+            zanshin_stack_name = 'tenchi-zanshin-service-role'
+            try:
+                cloudformation_client = self._deploy_cloudformation_zanshin_service_role(
+                        boto3_session, region, new_scan_target_id, zanshin_stack_name)
+                retries = 0
+                max_retry = 10
+                wait_between_retries = 10
+                zanshin_stack = self._get_cloudformation_stack_status(
+                        zanshin_stack_name, cloudformation_client)
+
+                while zanshin_stack['StackStatus'] != 'CREATE_COMPLETE':
+                    if not retries:
+                        self._logger.debug(
+                                f"Failed to confirm CloudFormation Stack {zanshin_stack_name} completion. Retrying.")
+                    if retries >= max_retry:
+                        raise RuntimeError('CloudFormation Stack wasn\'t deployed')
+                    time.sleep(wait_between_retries)
+                    self._logger.debug(
+                                f"Checking CloudFormation Stack {zanshin_stack_name}...")
+                    retries += 1
+                    zanshin_stack = self._get_cloudformation_stack_status(
+                            zanshin_stack_name, cloudformation_client)
+
+            except Exception as error:
+                print('err', error)
+                raise ValueError(
+                        f"Failed to confirm CloudFormation Stack {zanshin_stack_name} completion.")
+
+            self.check_organization_scan_target(
+                    organization_id=organization_id, scan_target_id=new_scan_target_id)
+            return self.get_organization_scan_target(organization_id=organization_id, scan_target_id=new_scan_target_id)
+
+    def _deploy_cloudformation_zanshin_service_role(self, boto3_session:object, region:str, new_scan_target_id:str, zanshin_stack_name:str):
+        """
+        Instantiate boto3 client for CloudFormation, and create the Stack containing Zanshin Service Role.
+        :return: boto3 cloudformation client.
+        """
+        try:
+            cloudformation_client = boto3_session.client('cloudformation', region_name=region)
+            cloudformation_client.create_stack(
+                StackName=zanshin_stack_name,
+                TemplateURL='https://s3.amazonaws.com/tenchi-assets/zanshin-service-role.template',
+                Parameters=[{
+                            'ParameterKey': 'ExternalId',
+                            'ParameterValue': new_scan_target_id
+                            }],
+                Capabilities=[
+                    'CAPABILITY_IAM', 'CAPABILITY_NAMED_IAM'
+                ],
+            )
+
+            return cloudformation_client
+        except Exception as e:  
+            self._logger.error('Unable to deploy CloudFormation zanshin-tenchi-service-role. The onboard won\'t succeed.')
+            raise e
+
+    def _get_cloudformation_stack_status(self, zanshin_stack_name, cloudformation_client):
+        """
+        Fetch CloudFormation Stack details. Assumes that there's only one Stack with given name.
+        :return: cloudformation stack.
+        """
+        zanshin_stack = cloudformation_client.describe_stacks(
+            StackName=zanshin_stack_name)['Stacks'][0]
+
+        return zanshin_stack
+
+    def _get_session_from_boto3_profile(self, boto3_profile, boto3):
+        """
+        Return boto3_session from boto3_profile informed
+        :return: boto3_session.
+        """
+        return boto3.Session(profile_name=boto3_profile)
+        
+    
+    def _check_aws_credentials_are_valid(self, boto3_session):
+        """
+        Check if boto3 informed credentials are valid performing aws sts get-caller-identity. In case of
+        problem, raises ValueError.
+        
+        """
+        try:
+            sts = boto3_session.client('sts')
+            sts.get_caller_identity()
+        except Exception as e:
+            raise ValueError(
+                "boto3 session is invalid. Working boto3 session is required.")
+
+    def _check_scantarget_is_aws(self, kind):
+        """
+        Check if informed Scan Target is of AWS Kind. If not, raises NotImplementedError.
+        """
+        if kind != ScanTargetKind.AWS:
+            raise NotImplementedError(
+                f"Onboard doesn't support {kind} environment yet")
+
+    def _check_boto3_installation(self):
+        """
+        Check if boto3 is installed in the current environment. If not, raises ImportError.
+        :return: boto3 module if present.
+        """
+        package_name = 'boto3'
+        spec = find_spec(package_name)
+        if spec is None:
+            raise ImportError(
+                f"{package_name} not present. {package_name} is required to perform AWS onboard.")
+
+        module = module_from_spec(spec)
+        sys.modules[package_name] = module
+        spec.loader.exec_module(module)
+        return module
 
 
 def validate_int(value, min_value=None, max_value=None, required=False) -> Optional[int]:
@@ -1478,10 +1678,9 @@ def validate_int(value, min_value=None, max_value=None, required=False) -> Optio
     if not isinstance(value, int):
         raise TypeError(f"{repr(value)} is not an integer")
     if min_value and value < min_value:
-        raise ValueError(f"{repr(value)} shouldn\"t be lower than {min_value}")
+        raise ValueError(f"{value} shouldn\'t be lower than {min_value}")
     if max_value and value > max_value:
-        raise ValueError(
-            f"{repr(value)} shouldn\"t be higher than {max_value}")
+        raise ValueError(f"{value} shouldn\'t be higher than {max_value}")
     return value
 
 
@@ -1493,9 +1692,10 @@ def validate_class(value, class_type):
 
 
 def validate_uuid(uuid: Union[UUID, str]) -> str:
-    if isinstance(uuid, str):
-        return str(UUID(uuid))
-    elif isinstance(uuid, UUID):
-        return str(uuid)
-    else:
+    try:
+        if isinstance(uuid, str):
+            return str(UUID(uuid))
+        elif isinstance(uuid, UUID):
+            return str(uuid)
+    except:
         raise TypeError(f"{repr(uuid)} is not a valid UUID")
