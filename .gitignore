@@ -1,2 +1,5 @@
-dist
 .idea
+.vscode
+logs
+splunk-appinspect/report/results.json
+out
